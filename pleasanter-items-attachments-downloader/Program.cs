@@ -1,4 +1,5 @@
-﻿using System.Threading.Tasks;
+﻿using System.Collections.Generic;
+using System.Threading.Tasks;
 using PowerArgs;
 
 class pleasanter_items_attachments_downloader
@@ -18,12 +19,8 @@ class pleasanter_items_attachments_downloader
 
             //URLの末尾に/が付けられていた場合は取り除く
             arg.Url = arg.Url.TrimEnd('/');
-            //サイト情報
-            var site = await GetSite(arg);
-            //一覧情報
-            var records = await GetRecords(arg);
-            //添付ファイルのダウンロード
-            await GetBinaries(arg, site, records);
+
+            await GetRecords(arg, await GetSite(arg));
 
             Console.WriteLine("Press any key to exit.");
             _ = Console.ReadLine();
@@ -57,7 +54,7 @@ class pleasanter_items_attachments_downloader
     }
 
 
-    static async Task<List<RecordData>> GetRecords(MyArgs arg, long offset = 0)
+    static async Task GetRecords(MyArgs arg, SiteData site, long offset = 0)
     {
         if (offset == 0)
         {
@@ -83,45 +80,62 @@ class pleasanter_items_attachments_downloader
 
         var recordsResponse = await respose.Content.ReadAsAsync<ApiRecordsResponse>();
 
-        Console.WriteLine($"Get Record List...{recordsResponse.Response.Offset:##,#}/{recordsResponse.Response.TotalCount:##,#}({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})");
+        Console.WriteLine($"Get Record List...{recordsResponse.Response.Offset:#,##0}/{recordsResponse.Response.TotalCount:#,##0}({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})");
 
-        var records = recordsResponse.Response.Data;
+        await GetBinaries(arg, site, recordsResponse.Response.Data);
+
 
         if (recordsResponse.Response.Data.Any() && recordsResponse.Response.Data.Count() == recordsResponse.Response.PageSize)
         {
-            records.AddRange((await GetRecords(arg, offset + recordsResponse.Response.PageSize)));
+            await GetRecords(arg, site, offset + recordsResponse.Response.PageSize);
         }
 
         Console.WriteLine("Get Record List...Complete");
-
-        return records;
     }
 
     static async Task GetBinaries(MyArgs arg, SiteData site, List<RecordData> records)
     {
-        Console.WriteLine("Get Binary...");
-
         foreach (var record in records.Select((r, i) => new { r, i }))
         {
             if (record.i % 20 == 0)
             {
-                Console.WriteLine($"Get Record List...{record.i:##,#}/{records.Count():##,#}({record.i / (double)records.Count():P2})");
+                Console.WriteLine($"Get Record List...{record.i:#,##0}/{records.Count():#,##0}({record.i / (double)records.Count():P2})");
             }
 
             await GetBinaries(arg, site, record.r);
         }
-
-        Console.WriteLine("Get Binary...Complete");
     }
 
     static async Task GetBinaries(MyArgs arg, SiteData site, RecordData record)
     {
+        if (!record.AttachmentsHash.Any())
+        {
+            //出力すべき添付ファイルがないときは処理しない
+            //レコードに対する添付ファイル項目がない
+            return;
+        }
+
         foreach (var attachments in record.AttachmentsHash)
         {
+            if (!attachments.Value.Any())
+            {
+                //出力すべき添付ファイルがないときは処理しない
+                //項目があるが添付ファイルがない
+                return;
+            }
+
+            //取込対象でない場合はスキップする
+            if (arg.TargetAttachment.Any(target => $"Attachments{target}" == attachments.Key))
+            {
+                Console.WriteLine($"Get Binary...Skip {attachments.Key}");
+
+                continue;
+            }
+
             //添付ファイル項目に別名が付けられている場合は取得する
             var labelText = site.SiteSettings.Columns.Where(column => column.ColumnName == attachments.Key).FirstOrDefault()?.LabelTextFormated;
 
-            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}");
+            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{Omission(record.ItemTitleFormated)}/[{attachments.Key}]{Omission(labelText)}");
 
             var path = Path.Combine(
                 arg.Path,
@@ -146,28 +160,49 @@ class pleasanter_items_attachments_downloader
 
                 if (!respose.IsSuccessStatusCode)
                 {
-                    throw new Exception($"Can not get Binary. {respose.StatusCode}");
+                    switch (respose.StatusCode)
+                    {
+                        default:
+                            {
+                                throw new Exception($"Can not get Binary. {respose.StatusCode}");
+                            }
+                        case System.Net.HttpStatusCode.NotFound:
+                            {
+                                Console.WriteLine($"Get Binary...{respose.StatusCode}");
+                                continue;
+                            }
+                    }
                 }
 
                 var binaryResponse = await respose.Content.ReadAsAsync<ApiBinaryResponse>();
 
 
-                Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}");
+                Console.WriteLine($"Get Binary...>[{binaryResponse.Id}]{Omission(binaryResponse.Response.FileNameFormated)}");
 
                 var fileName = Path.Combine(path, $"[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}");
                 byte[] bytes = Convert.FromBase64String(binaryResponse.Response.Base64);
                 File.WriteAllBytes(fileName, bytes);//ファイルが既に存在する場合は上書きされる
 
 
-                Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}...Complete");
+                Console.WriteLine($"Get Binary...>[{binaryResponse.Id}]{Omission(binaryResponse.Response.FileNameFormated)}...Complete");
             }
 
-            //ディレクトリを作ったもの空だった場合は削除
-            //ここまでの心配はたぶん必要ない
-            Directory.Delete(path, false);
-
-            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/...Complete");
+            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{Omission(record.ItemTitleFormated)}/[{attachments.Key}]{Omission(labelText)}...Complete");
 
         }
     }
+
+    static string Omission(string str)
+    {
+        if (str == null)
+        {
+            return "";
+        }
+        if (str.Length <= 15)
+        {
+            return str;
+        }
+        return $"{str.Substring(0, 12)}...";
+    }
+
 }
