@@ -1,8 +1,4 @@
-﻿using System.Net;
-using System.Net.Mail;
-using System.Xml.Serialization;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+﻿using System.Threading.Tasks;
 using PowerArgs;
 
 class pleasanter_items_attachments_downloader
@@ -16,73 +12,32 @@ class pleasanter_items_attachments_downloader
 
     static async Task Main(string[] args)
     {
-        var arg = Args.Parse<MyArgs>(args);
-
-        //URLの末尾に/が付けられていた場合は取り除く
-        arg.Url = arg.Url.TrimEnd('/');
-
-        //まずは現状のサイト設定を呼び出してくる
-        var site = await GetSite(arg);
-
-        if (!site.Item1 || site.Item2 == default || site.Item3 == default)
+        try
         {
-            //処理すべき対象がないので打ち切る
-            Console.WriteLine("サイトから情報が取得出来ません。接続情報やAPIキー、サイトに添付ファイル項目が含まれるか確認して下さい。");
-            return;
+            var arg = Args.Parse<MyArgs>(args);
+
+            //URLの末尾に/が付けられていた場合は取り除く
+            arg.Url = arg.Url.TrimEnd('/');
+            //サイト情報
+            var site = await GetSite(arg);
+            //一覧情報
+            var records = await GetRecords(arg);
+            //添付ファイルのダウンロード
+            await GetBinaries(arg, site, records);
+
+            Console.WriteLine("Press any key to exit.");
+            _ = Console.ReadLine();
         }
-
-        //ファイル名に使用できない文字が含まれていた場合は置換する
-        site.Item2 = string.Concat(site.Item2.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-
-        var sitePath = Path.Combine(arg.Path, $"{arg.SiteId}_{site.Item2}");
-
-        if (!Directory.Exists(sitePath))
+        catch (Exception ex)
         {
-            Directory.CreateDirectory(sitePath);
+            Console.WriteLine(ex.Message);
         }
-
-
-        await GetItems(arg, site.Item3);
     }
 
-
-    static async Task GetItems(MyArgs arg, List<KeyValuePair<string, string>> columns, long offset = 0)
+    static async Task<SiteData> GetSite(MyArgs arg)
     {
-        var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/get", new
-        {
-            ApiVersion = "1.1",
-            arg.ApiKey,
-            Offset = offset,
-            View = new
-            {
-                ApiDataType = "KeyValues",
-                GridColumns = columns.Select(x => x.Key).ToArray(),
-                ColumnSorterHash = new
-                {
-                    CreatedTime = "asc"
-                }
-            }
-        });
+        Console.WriteLine("Get Site Info...");
 
-        var json = await respose.Content.ReadAsStringAsync();
-        var items = JObject.Parse(json);
-
-        var count = ((JArray)items.SelectToken("Response.Data")).Count();//取得された要素数
-        var pageSize = (long)items.SelectToken("Response.PageSize");
-
-        if (count == pageSize)
-        {
-            await GetItems(arg, columns, offset + pageSize);
-        }
-
-         ((JArray)items.SelectToken("Response.Data")).Select(data => ((JArray)data).Select(attachment => new
-         {
-
-         }));
-    }
-
-    static async Task<(bool, string, List<KeyValuePair<string, string>>)> GetSite(MyArgs arg)
-    {
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/getsite", new
         {
             ApiVersion = "1.1",
@@ -91,84 +46,128 @@ class pleasanter_items_attachments_downloader
 
         if (!respose.IsSuccessStatusCode)
         {
-            return (false, default, default);
+            throw new Exception($"Can not get Site Info. {respose.StatusCode}");
         }
 
-        var json = await respose.Content.ReadAsStringAsync();
-        var site = JObject.Parse(json);
+        var siteResponse = await respose.Content.ReadAsAsync<ApiSiteResponse>();
 
-        //サイト名を取得する
-        var title = (string)site.SelectToken("Response.Data.Title");
+        Console.WriteLine("Get Site Info...Complete");
 
-        //一覧画面の設定を取得してくる
-        var gridColumns = ((JArray)site.SelectToken("Response.Data.SiteSettings.GridColumns"))
-            .Select(col => ((string)col))
-            .Where(col => col?.StartsWith("Attachments") == true)
-            .Select(col => new
+        return siteResponse.Response.Data;
+    }
+
+
+    static async Task<List<RecordData>> GetRecords(MyArgs arg, long offset = 0)
+    {
+        if (offset == 0)
+        {
+            Console.WriteLine("Get Record List...");
+        }
+
+        var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/get", new
+        {
+            ApiVersion = "1.1",
+            arg.ApiKey,
+            Offset = offset,
+            View = new
             {
-                ColumnName = col
-            });
+                ColumnSorterHash = new { CreatedTime = "asc" }//作成日昇順で取得することで繰り返し操作の一貫性を担保する
 
-        //編集画面の設定を取得してくる
-        var editorColumn = ((JArray)site.SelectToken("Response.Data.SiteSettings.EditorColumnHash.General"))
-            .Select(col => ((string)col))
-            .Where(col => col?.StartsWith("Attachments") == true)
-            .Select(col => new
+            }
+        });
+
+        if (!respose.IsSuccessStatusCode)
+        {
+            throw new Exception($"Can not get Record List. {respose.StatusCode}");
+        }
+
+        var recordsResponse = await respose.Content.ReadAsAsync<ApiRecordsResponse>();
+
+        Console.WriteLine($"Get Record List...{recordsResponse.Response.Offset:##,#}/{recordsResponse.Response.TotalCount:##,#}({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})");
+
+        var records = recordsResponse.Response.Data;
+
+        if (recordsResponse.Response.Data.Any() && recordsResponse.Response.Data.Count() == recordsResponse.Response.PageSize)
+        {
+            records.AddRange((await GetRecords(arg, offset + recordsResponse.Response.PageSize)));
+        }
+
+        Console.WriteLine("Get Record List...Complete");
+
+        return records;
+    }
+
+    static async Task GetBinaries(MyArgs arg, SiteData site, List<RecordData> records)
+    {
+        Console.WriteLine("Get Binary...");
+
+        foreach (var record in records.Select((r, i) => new { r, i }))
+        {
+            if (record.i % 20 == 0)
             {
-                ColumnName = col
-            });
+                Console.WriteLine($"Get Record List...{record.i:##,#}/{records.Count():##,#}({record.i / (double)records.Count():P2})");
+            }
 
-        //一覧画面も編集画面も空でない場合
-        if (gridColumns?.Any() == true && editorColumn?.Any() == true)
-        {
-            gridColumns = gridColumns.Union(editorColumn);
+            await GetBinaries(arg, site, record.r);
         }
 
-        //一覧画面は空で編集画面は空でない場合
-        if (gridColumns?.Any() != true && editorColumn?.Any() == true)
-        {
-            gridColumns = editorColumn;
-        }
+        Console.WriteLine("Get Binary...Complete");
+    }
 
-        if (gridColumns?.Any() != true)
+    static async Task GetBinaries(MyArgs arg, SiteData site, RecordData record)
+    {
+        foreach (var attachments in record.AttachmentsHash)
         {
-            //処理すべき対象がない
-            return (true, title, default);
-        }
+            //添付ファイル項目に別名が付けられている場合は取得する
+            var labelText = site.SiteSettings.Columns.Where(column => column.ColumnName == attachments.Key).FirstOrDefault()?.LabelTextFormated;
 
-        //カラムの別名を取得してくる
-        var columns = ((JArray)site?.SelectToken("Response.Data.SiteSettings.Columns"))
-            .Select(col => (JObject)col)
-            .Where(col => ((string)col?["ColumnName"])?.StartsWith("Attachments") == true)
-            .Select(col => new
+            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}");
+
+            var path = Path.Combine(
+                arg.Path,
+                $"[{arg.SiteId}]{site.TitleFormated}",
+                $"[{record.ReferenceId}]{record.ItemTitleFormated}",
+                $"[{attachments.Key}]{labelText}"
+            );
+
+            //書き出し先のフォルダを作る
+            if (!Directory.Exists(path))
             {
-                ColumnName = (string)col?["ColumnName"],
-                LabelText = (string)col?["LabelText"],
-            });
+                Directory.CreateDirectory(path);
+            }
 
-        if (columns?.Any() != true)
-        {
-            //結合すべき対象が存在しないので、そのままくっつけて返してしまう
-            return (true, title, gridColumns.Select(x => new KeyValuePair<string, string>(x.ColumnName, x.ColumnName)).ToList());
-        }
-
-        //取得した項目情報に対してLabelTextをくっつける
-        var joinedGridColumns = gridColumns
-            .GroupJoin(
-                columns,
-                gridColumns => gridColumns.ColumnName,
-                columns => columns.ColumnName,
-                (gridColumns, columns) => new
+            foreach (var attachment in attachments.Value)
+            {
+                var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/binaries/{attachment.Guid}/get", new
                 {
-                    gridColumns.ColumnName,
-                    LabelText = columns?.FirstOrDefault()?.LabelText ?? gridColumns.ColumnName,
+                    ApiVersion = "1.1",
+                    arg.ApiKey
                 });
 
-        if (joinedGridColumns?.Any() == true)
-        {
-            return (true, title, joinedGridColumns.Select(x => new KeyValuePair<string, string>(x.ColumnName, x.LabelText)).ToList());
-        }
+                if (!respose.IsSuccessStatusCode)
+                {
+                    throw new Exception($"Can not get Binary. {respose.StatusCode}");
+                }
 
-        return (true, title, default);
+                var binaryResponse = await respose.Content.ReadAsAsync<ApiBinaryResponse>();
+
+
+                Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}");
+
+                var fileName = Path.Combine(path, $"[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}");
+                byte[] bytes = Convert.FromBase64String(binaryResponse.Response.Base64);
+                File.WriteAllBytes(fileName, bytes);//ファイルが既に存在する場合は上書きされる
+
+
+                Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}...Complete");
+            }
+
+            //ディレクトリを作ったもの空だった場合は削除
+            //ここまでの心配はたぶん必要ない
+            Directory.Delete(path, false);
+
+            Console.WriteLine($"Get Binary...[{record.ReferenceId}]{record.ItemTitleFormated}/[{attachments.Key}]{labelText}/...Complete");
+
+        }
     }
 }
