@@ -1,4 +1,6 @@
-﻿using PowerArgs;
+﻿using System.Net;
+using System.Text.RegularExpressions;
+using PowerArgs;
 
 internal class pleasanter_items_attachments_downloader
 {
@@ -14,24 +16,25 @@ internal class pleasanter_items_attachments_downloader
         try
         {
             var arg = Args.Parse<MyArgs>(args);
+            var nest = 0;
 
             //URLの末尾に/が付けられていた場合は取り除く
             arg.Url = arg.Url.TrimEnd('/');
 
-            await GetRecords(arg, await GetSite(arg));
+            await GetRecords(nest + 1, arg, await GetSite(nest, arg));
 
-            Console.WriteLine("Press any key to exit.");
+            WriteLine(nest, "Press any key to exit.");
             _ = Console.ReadLine();
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex.Message);
+            WriteLine(0, ex.Message);
         }
     }
 
-    private static async Task<SiteData> GetSite(MyArgs arg)
+    private static async Task<SiteData> GetSite(int nest, MyArgs arg)
     {
-        Console.WriteLine("Get Site Info...");
+        WriteLine(nest, $"Get Site Info...");
 
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/getsite", new
         {
@@ -46,17 +49,17 @@ internal class pleasanter_items_attachments_downloader
 
         var siteResponse = await respose.Content.ReadAsAsync<ApiSiteResponse>();
 
-        Console.WriteLine("Get Site Info...Complete");
+        WriteLine(nest, $"Get Site Info...Complete[{Omission(siteResponse.Response.Data.Title)}]");
 
         return siteResponse.Response.Data;
     }
 
 
-    private static async Task GetRecords(MyArgs arg, SiteData site, long offset = 0)
+    private static async Task GetRecords(int nest, MyArgs arg, SiteData site, long offset = 0)
     {
         if (offset == 0)
         {
-            Console.WriteLine("Get Record List...");
+            WriteLine(nest, "Get Record List...");
         }
 
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/get", new
@@ -78,38 +81,97 @@ internal class pleasanter_items_attachments_downloader
 
         var recordsResponse = await respose.Content.ReadAsAsync<ApiRecordsResponse>();
 
-        Console.WriteLine($"({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})Get Record List...{recordsResponse.Response.Offset:#,##0}/{recordsResponse.Response.TotalCount:#,##0}");
+        WriteLine(nest + 1, $"({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})Get Record List...({recordsResponse.Response.Offset:#,##0}/{recordsResponse.Response.TotalCount:#,##0})");
 
-        await GetBinaries(arg, site, recordsResponse.Response.Data);
+        await GetRecordsBinaries(nest + 1, arg, site, recordsResponse.Response.Data);
 
         if (recordsResponse.Response.Data.Any() && recordsResponse.Response.Data.Count() == recordsResponse.Response.PageSize)
         {
-            await GetRecords(arg, site, offset + recordsResponse.Response.PageSize);
+            await GetRecords(nest + 1, arg, site, offset + recordsResponse.Response.PageSize);
         }
 
-        Console.WriteLine("Get Record List...Complete");
+        WriteLine(nest, "Get Record List...Complete");
     }
 
-    private static async Task GetBinaries(MyArgs arg, SiteData site, List<RecordData> records)
+    private static async Task GetRecordsBinaries(int nest, MyArgs arg, SiteData site, List<RecordData> records)
     {
-        Console.WriteLine($"\tGet Binaries...Complete");
+        WriteLine(nest, $"Get Records Binaries...");
 
         foreach (var record in records.Select((r, i) => new { r, i }))
         {
             var ratio = record.i / (double)records.Count();
 
-            if ((int)(ratio * 100) % 10 == 0)
-            {
-                Console.WriteLine($"\t({ratio:P2})Get Binaries...{record.i:#,##0}/{records.Count():#,##0}");
-            }
+            WriteLine(nest + 1, $"({ratio:P2})Get Records Binaries...[{Omission(record.r.ItemTitle)}]({record.i:#,##0}/{records.Count():#,##0})");
 
-            await GetBinaries(arg, site, record.r);
+            await GetDescriptionBinaries(nest + 1, arg, site, record.r);
+            await GetBodyBinaries(nest + 1, arg, site, record.r, BinaryType.Body, "Body", record.r.Body);
+            await GetAttachmentsBinaries(nest + 1, arg, site, record.r);
+            await GetCommentsBinaries(nest + 1, arg, site, record.r);
         }
 
-        Console.WriteLine($"\tGet Binaries...Complete");
+        WriteLine(nest, $"Get Records Binaries...Complete");
     }
 
-    private static async Task GetBinaries(MyArgs arg, SiteData site, RecordData record)
+    enum BinaryType
+    {
+        Attachments,
+        Body,
+        Comments,
+        Description,
+    }
+
+    private static async Task GetDescriptionBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
+    {
+        WriteLine(nest, $"Get Description Binaries...");
+
+        if (!record.DescriptionHash.Any())
+        {
+            //出力すべき添付ファイルがないときは処理しない
+            //レコードに対する添付ファイル項目がない
+            return;
+        }
+
+        foreach (var description in record.DescriptionHash)
+        {
+            WriteLine(nest + 1, $"Get Description Binaries...[{description.Key}]");
+
+            await GetBodyBinaries(nest + 1, arg, site, record, BinaryType.Description, description.Key, description.Value);
+        }
+
+        WriteLine(nest, $"Get Description Binaries...Complete");
+    }
+
+    private static async Task GetCommentsBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
+    {
+        if (!record.Comments.Any())
+        {
+            //コメント項目がないときは処理しない
+            return;
+        }
+
+        WriteLine(nest, $"Get Comments Binaries...");
+
+        foreach (var comment in record.Comments)
+        {
+            WriteLine(nest + 1, $"Get Description Binaries...[Comments:{comment.CommentId}]");
+
+            await GetBodyBinaries(nest + 1, arg, site, record, BinaryType.Comments, "Comments", comment.Body, $"{comment.CommentId}");
+        }
+
+        WriteLine(nest, $"Get Comments Binaries...Complete");
+    }
+
+    private static async Task GetBodyBinaries(int nest, MyArgs arg, SiteData site, RecordData record, BinaryType type, string itemLogicName, string body, string specialName = null)
+    {
+        foreach (Match match in Regex.Matches(body ?? "", @"\!\[image\]\((/\S+)*/binaries/[a-f0-9]{32}/show\)"))
+        {
+            var guid = Regex.Match(match.Value, "[a-f0-9]{32}").Value;
+
+            await GetBinaryAndSave(nest + 1, arg, site, record, type, itemLogicName, guid, specialName);
+        }
+    }
+
+    private static async Task GetAttachmentsBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
     {
         if (!record.AttachmentsHash.Any())
         {
@@ -117,6 +179,8 @@ internal class pleasanter_items_attachments_downloader
             //レコードに対する添付ファイル項目がない
             return;
         }
+
+        WriteLine(nest, $"Get Attachments Binaries...");
 
         foreach (var attachments in record.AttachmentsHash)
         {
@@ -127,72 +191,80 @@ internal class pleasanter_items_attachments_downloader
                 return;
             }
 
+            WriteLine(nest + 1, $"Get Attachments Binaries...[{attachments.Key}]");
+
             //取込対象でない場合はスキップする
             if (arg.TargetAttachment.Any(target => $"Attachments{target}" == attachments.Key))
             {
-                Console.WriteLine($"\t\tGet Binary...Skip {attachments.Key}");
-
+                WriteLine(nest + 1, $"Get Attachments Binaries...Skip[{attachments.Key}]");
                 continue;
-            }
-
-            //添付ファイル項目に別名が付けられている場合は取得する
-            var labelText = site.SiteSettings.Columns.Where(column => column.ColumnName == attachments.Key).FirstOrDefault()?.LabelTextFormated;
-
-            Console.WriteLine($"\t\tGet Binary...[{record.ReferenceId}]{Omission(record.ItemTitleFormated)}/[{attachments.Key}]{Omission(labelText)}");
-
-            var path = Path.Combine(
-                arg.Path,
-                $"[{arg.SiteId}]{site.TitleFormated}",
-                $"[{record.ReferenceId}]{record.ItemTitleFormated}",
-                $"[{attachments.Key}]{labelText}"
-            );
-
-            //書き出し先のフォルダを作る
-            if (!Directory.Exists(path))
-            {
-                Directory.CreateDirectory(path);
             }
 
             foreach (var attachment in attachments.Value)
             {
-                var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/binaries/{attachment.Guid}/get", new
-                {
-                    ApiVersion = "1.1",
-                    arg.ApiKey
-                });
-
-                if (!respose.IsSuccessStatusCode)
-                {
-                    switch (respose.StatusCode)
-                    {
-                        default:
-                            {
-                                throw new Exception($"\t\t\tCan not get Binary. {respose.StatusCode}");
-                            }
-                        case System.Net.HttpStatusCode.NotFound:
-                            {
-                                Console.WriteLine($"\t\t\tGet Binary...{respose.StatusCode}");
-                                continue;
-                            }
-                    }
-                }
-
-                var binaryResponse = await respose.Content.ReadAsAsync<ApiBinaryResponse>();
-
-
-                Console.WriteLine($"\t\t\tGet Binary...[{binaryResponse.Id}]{Omission(binaryResponse.Response.FileNameFormated)}");
-
-                var fileName = Path.Combine(path, $"[{binaryResponse.Id}]{binaryResponse.Response.FileNameFormated}");
-                var bytes = Convert.FromBase64String(binaryResponse.Response.Base64);
-                File.WriteAllBytes(fileName, bytes);//ファイルが既に存在する場合は上書きされる
-
-
-                Console.WriteLine($"\t\t\tGet Binary...[{binaryResponse.Id}]{Omission(binaryResponse.Response.FileNameFormated)}...Complete");
+                await GetBinaryAndSave(nest + 1, arg, site, record, BinaryType.Attachments, attachments.Key, attachment.Guid);
             }
-
-            Console.WriteLine($"\t\tGet Binary...[{record.ReferenceId}]{Omission(record.ItemTitleFormated)}/[{attachments.Key}]{Omission(labelText)}...Complete");
-
         }
+
+        WriteLine(nest, $"Get GetAttachments Binaries...Complete");
+    }
+
+    /// <summary>
+    /// GUIDを指定して指定パスにファイルをダウンロードしてくる
+    /// </summary>
+    /// <param name="arg"></param>
+    /// <param name="site"></param>
+    /// <param name="record"></param>
+    /// <param name="type"></param>
+    /// <param name="itemLogicName"></param>
+    /// <param name="guid"></param>
+    /// <returns></returns>
+    /// <exception cref="Exception"></exception>
+    private static async Task GetBinaryAndSave(int nest, MyArgs arg, SiteData site, RecordData record, BinaryType type, string itemLogicName, string guid, string specialName = null)
+    {
+        var itemPhysicName = site.SiteSettings.Columns.Where(column => column.ColumnName == itemLogicName).FirstOrDefault()?.LabelText;
+        var path = Path.Combine(arg.Path, $"[{arg.SiteId}]{site.TitleFormated}", $"[{record.ReferenceId}]{record.ItemTitleFormated}", $"[{itemLogicName}]{itemPhysicName}");
+
+        WriteLine(nest, $"Get Binary&Save...");
+
+        var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/binaries/{guid}/get", new
+        {
+            ApiVersion = "1.1",
+            arg.ApiKey
+        });
+
+        if (!respose.IsSuccessStatusCode)
+        {
+            switch (respose.StatusCode)
+            {
+                default:
+                    {
+                        throw new Exception();
+                    }
+                case HttpStatusCode.NotFound:
+                    {
+                        WriteLine(nest, $"Get Binary&Save...{respose.StatusCode}");
+                        return;
+                    }
+            }
+        }
+
+        if (!Directory.Exists(path))
+        {
+            Directory.CreateDirectory(path);
+        }
+
+        var binaryResponse = await respose.Content.ReadAsAsync<ApiBinaryResponse>();
+
+        var fileName = string.Join("", new[] {
+            $"[{binaryResponse.Id}]",
+           string.IsNullOrEmpty(specialName) ? string.Empty : $"[{specialName}]",
+            $"{binaryResponse.Response.FileNameFormated}"
+        });
+
+        File.WriteAllBytes(Path.Combine(path, fileName), binaryResponse.Response.Binaries);
+
+        WriteLine(nest, $"Get Binary&Save...Complete[{binaryResponse.Id}]");
     }
 
     private static string Omission(string str)
@@ -208,4 +280,5 @@ internal class pleasanter_items_attachments_downloader
         return $"{str.Substring(0, 12)}...";
     }
 
+    private static void WriteLine(int nest, string message) => Console.WriteLine($"{string.Join("", Enumerable.Range(0, nest).Select(n => "  "/*半角SPx2*/))}{message}");
 }
