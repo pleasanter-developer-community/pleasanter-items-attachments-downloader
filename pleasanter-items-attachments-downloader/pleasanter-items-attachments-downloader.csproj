@@ -6,6 +6,7 @@
     <RootNamespace>pleasanter_items_attachments_downloader</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
+    <VersionPrefix>1.0.1</VersionPrefix>
   </PropertyGroup>
 
   <ItemGroup>
