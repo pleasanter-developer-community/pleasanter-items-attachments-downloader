@@ -3,6 +3,8 @@ using System.Net.Mail;
 using System.Text.RegularExpressions;
 using System.Xml.Schema;
 using PowerArgs;
+using PowerArgs.Samples;
+using Spectre.Console;
 
 internal class pleasanter_items_attachments_downloader
 {
@@ -17,6 +19,8 @@ internal class pleasanter_items_attachments_downloader
     {
         try
         {
+
+
             var arg = Args.Parse<MyArgs>(args);
             var nest = 0;
 
@@ -28,20 +32,33 @@ internal class pleasanter_items_attachments_downloader
             //URLの末尾に/が付けられていた場合は取り除く
             arg.Url = arg.Url.TrimEnd('/');
 
-            await GetRecords(nest + 1, arg, await GetSite(nest, arg));
+            await AnsiConsole
+                .Progress()
+                .Columns(new ProgressColumn[]
+                {
+                new TaskDescriptionColumn(),
+                new ProgressBarColumn(),
+                new PercentageColumn(),
+                new SpinnerColumn(),
+                }).StartAsync(async ctx =>
+                {
+                    var task = ctx.AddTask("Get Records");
 
-            WriteLine(nest, "Press any key to exit.");
+                    await GetRecords(task, arg, await GetSite(nest, arg));
+                });
+
+            AnsiConsole.WriteLine("Press any key to exit.");
             _ = Console.ReadLine();
         }
         catch (Exception ex)
         {
-            WriteLine(0, ex.Message);
+            AnsiConsole.WriteException(ex);
         }
     }
 
     private static async Task<SiteData> GetSite(int nest, MyArgs arg)
     {
-        WriteLine(nest, $"Get Site Info...");
+        AnsiConsole.WriteLine($"Get Site Info...");
 
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/getsite", new
         {
@@ -56,19 +73,14 @@ internal class pleasanter_items_attachments_downloader
 
         var siteResponse = await respose.Content.ReadAsAsync<ApiSiteResponse>();
 
-        WriteLine(nest, $"Get Site Info...Complete[{Omission(siteResponse.Response.Data.Title)}]");
+        AnsiConsole.WriteLine($"Get Site Info...Complete[{Omission(siteResponse.Response.Data.Title)}]");
 
         return siteResponse.Response.Data;
     }
 
 
-    private static async Task GetRecords(int nest, MyArgs arg, SiteData site, long offset = 0)
+    private static async Task GetRecords(ProgressTask task, MyArgs arg, SiteData site, long offset = 0)
     {
-        if (offset == 0)
-        {
-            WriteLine(nest, "Get Record List...");
-        }
-
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/items/{arg.SiteId}/get", new
         {
             ApiVersion = "1.1",
@@ -88,27 +100,26 @@ internal class pleasanter_items_attachments_downloader
 
         var recordsResponse = await respose.Content.ReadAsAsync<ApiRecordsResponse>();
 
-        WriteLine(nest + 1, $"({recordsResponse.Response.Offset / (double)recordsResponse.Response.TotalCount:P2})Get Record List...({recordsResponse.Response.Offset:#,##0}/{recordsResponse.Response.TotalCount:#,##0})");
+        task.MaxValue(recordsResponse.Response.TotalCount);
+        task.Value(recordsResponse.Response.Offset);
 
-        await GetRecordsBinaries(nest + 1, arg, site, recordsResponse.Response.Data);
+        await GetRecordsBinaries(0 + 1, arg, site, recordsResponse.Response.Data);
 
         if (recordsResponse.Response.Data.Any() && recordsResponse.Response.Data.Count() == recordsResponse.Response.PageSize)
         {
-            await GetRecords(nest + 1, arg, site, offset + recordsResponse.Response.PageSize);
+            await GetRecords(task, arg, site, offset + recordsResponse.Response.PageSize);
         }
-
-        WriteLine(nest, "Get Record List...Complete");
     }
 
     private static async Task GetRecordsBinaries(int nest, MyArgs arg, SiteData site, List<RecordData> records)
     {
-        WriteLine(nest, $"Get Records Binaries...");
+        AnsiConsole.WriteLine($"Get Records Binaries...");
 
         foreach (var record in records.Select((r, i) => new { r, i }))
         {
             var ratio = record.i / (double)records.Count();
 
-            WriteLine(nest + 1, $"({ratio:P2})Get Records Binaries...[{Omission(record.r.ItemTitle)}]({record.i:#,##0}/{records.Count():#,##0})");
+            AnsiConsole.WriteLine($"({ratio:P2})Get Records Binaries...[{Omission(record.r.ItemTitle)}]({record.i:#,##0}/{records.Count():#,##0})");
 
             await GetBodyBinaries(nest + 1, arg, site, record.r);
             await GetDescriptionBinaries(nest + 1, arg, site, record.r);
@@ -116,7 +127,7 @@ internal class pleasanter_items_attachments_downloader
             await GetCommentsBinaries(nest + 1, arg, site, record.r);
         }
 
-        WriteLine(nest, $"Get Records Binaries...Complete");
+        AnsiConsole.WriteLine($"Get Records Binaries...Complete");
     }
 
     enum BinaryType
@@ -129,13 +140,13 @@ internal class pleasanter_items_attachments_downloader
 
     private static async Task GetDescriptionBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
     {
-        WriteLine(nest, $"Get Description Binaries...");
+        AnsiConsole.WriteLine($"Get Description Binaries...");
 
         if (!record.DescriptionHash.Any())
         {
             //出力すべき添付ファイルがないときは処理しない
             //レコードに対する添付ファイル項目がない
-            WriteLine(nest, $"Get Description Binaries...None");
+            AnsiConsole.WriteLine($"Get Description Binaries...None");
             return;
         }
 
@@ -143,7 +154,7 @@ internal class pleasanter_items_attachments_downloader
         {
             if (arg.SkipDescription.Any(x => x == description.Key))
             {
-                WriteLine(nest + 1, $"Get Description Binaries...Skip[{description.Key}]");
+                AnsiConsole.WriteLine($"Get Description Binaries...Skip[{description.Key}]");
                 continue;
             }
 
@@ -153,33 +164,33 @@ internal class pleasanter_items_attachments_downloader
             }
             else
             {
-                WriteLine(nest + 1, $"Get Description Binaries...Target[{description.Key}]");
+                AnsiConsole.WriteLine($"Get Description Binaries...Target[{description.Key}]");
             }
 
-            WriteLine(nest + 1, $"Get Description Binaries...[{description.Key}]");
+            AnsiConsole.WriteLine($"Get Description Binaries...[{description.Key}]");
 
             await GetBinaries(nest + 1, arg, site, record, BinaryType.Description, description.Key, description.Value);
 
-            WriteLine(nest + 1, $"Get Description Binaries...Complete[{description.Key}]");
+            AnsiConsole.WriteLine($"Get Description Binaries...Complete[{description.Key}]");
         }
 
-        WriteLine(nest, $"Get Description Binaries...Complete");
+        AnsiConsole.WriteLine($"Get Description Binaries...Complete");
     }
 
     private static async Task GetCommentsBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
     {
-        WriteLine(nest, $"Get Comments Binaries...");
+        AnsiConsole.WriteLine($"Get Comments Binaries...");
 
         if (!record.Comments.Any())
         {
             //コメント項目がないときは処理しない
-            WriteLine(nest, $"Get Comments Binaries...None");
+            AnsiConsole.WriteLine($"Get Comments Binaries...None");
             return;
         }
 
         if (arg.SkipComments)
         {
-            WriteLine(nest + 1, $"Get Comments Binaries...Skip");
+            AnsiConsole.WriteLine($"Get Comments Binaries...Skip");
             return;
         }
 
@@ -189,28 +200,28 @@ internal class pleasanter_items_attachments_downloader
         }
         else
         {
-            WriteLine(nest + 1, $"Get Comments Binaries...Target");
+            AnsiConsole.WriteLine($"Get Comments Binaries...Target");
         }
 
         foreach (var comment in record.Comments)
         {
-            WriteLine(nest + 1, $"Get Comments Binaries...[Comments:{comment.CommentId}]");
+            AnsiConsole.WriteLine($"Get Comments Binaries...[Comments:{comment.CommentId}]");
 
             await GetBinaries(nest + 1, arg, site, record, BinaryType.Comments, "Comments", comment.Body, $"{comment.CommentId}");
 
-            WriteLine(nest + 1, $"Get Comments Binaries...Complete[Comments:{comment.CommentId}]");
+            AnsiConsole.WriteLine($"Get Comments Binaries...Complete[Comments:{comment.CommentId}]");
         }
 
-        WriteLine(nest, $"Get Comments Binaries...Complete");
+        AnsiConsole.WriteLine($"Get Comments Binaries...Complete");
     }
 
     private static async Task GetBodyBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
     {
-        WriteLine(nest, $"Get Body Binaries...");
+        AnsiConsole.WriteLine($"Get Body Binaries...");
 
         if (arg.SkipBody)
         {
-            WriteLine(nest + 1, $"Get Boby Binaries...Skip");
+            AnsiConsole.WriteLine($"Get Boby Binaries...Skip");
             return;
         }
 
@@ -220,12 +231,12 @@ internal class pleasanter_items_attachments_downloader
         }
         else
         {
-            WriteLine(nest + 1, $"Get Boby Binaries...Target");
+            AnsiConsole.WriteLine($"Get Boby Binaries...Target");
         }
 
         await GetBinaries(nest + 1, arg, site, record, BinaryType.Body, "Body", record.Body);
 
-        WriteLine(nest, $"Get Body Binaries...Complete");
+        AnsiConsole.WriteLine($"Get Body Binaries...Complete");
     }
 
     private static async Task GetBinaries(int nest, MyArgs arg, SiteData site, RecordData record, BinaryType type, string itemLogicName, string body, string specialName = null)
@@ -235,7 +246,7 @@ internal class pleasanter_items_attachments_downloader
         if (!matches.Any())
         {
             //処理対象が存在しないので処理しない
-            WriteLine(nest, $"Get {type} Binaries...None");
+            AnsiConsole.WriteLine($"Get {type} Binaries...None");
             return;
         }
 
@@ -249,14 +260,14 @@ internal class pleasanter_items_attachments_downloader
 
     private static async Task GetAttachmentsBinaries(int nest, MyArgs arg, SiteData site, RecordData record)
     {
-        WriteLine(nest, $"Get Attachments Binaries...");
+        AnsiConsole.WriteLine($"Get Attachments Binaries...");
 
         if (!record.AttachmentsHash.Any())
         {
             //出力すべき添付ファイルがないときは処理しない
             //レコードに対する添付ファイル項目がない
 
-            WriteLine(nest, $"Get Attachments Binaries...None");
+            AnsiConsole.WriteLine($"Get Attachments Binaries...None");
             return;
         }
 
@@ -266,16 +277,16 @@ internal class pleasanter_items_attachments_downloader
             {
                 //出力すべき添付ファイルがないときは処理しない
                 //項目があるが添付ファイルがない
-                WriteLine(nest, $"Get Attachments Binaries...None");
+                AnsiConsole.WriteLine($"Get Attachments Binaries...None");
                 return;
             }
 
-            WriteLine(nest + 1, $"Get Attachments Binaries...[{attachments.Key}]");
+            AnsiConsole.WriteLine($"Get Attachments Binaries...[{attachments.Key}]");
 
             //取込対象でない場合はスキップする
             if (arg.SkipAttachments.Any(skip => skip == attachments.Key))
             {
-                WriteLine(nest + 1, $"Get Attachments Binaries...Skip[{attachments.Key}]");
+                AnsiConsole.WriteLine($"Get Attachments Binaries...Skip[{attachments.Key}]");
                 continue;
             }
 
@@ -285,7 +296,7 @@ internal class pleasanter_items_attachments_downloader
             }
             else
             {
-                WriteLine(nest + 1, $"Get Attachments Binaries...Target[{attachments.Key}]");
+                AnsiConsole.WriteLine($"Get Attachments Binaries...Target[{attachments.Key}]");
             }
 
             foreach (var attachment in attachments.Value)
@@ -294,7 +305,7 @@ internal class pleasanter_items_attachments_downloader
             }
         }
 
-        WriteLine(nest, $"Get GetAttachments Binaries...Complete");
+        AnsiConsole.WriteLine($"Get GetAttachments Binaries...Complete");
     }
 
     /// <summary>
@@ -313,7 +324,7 @@ internal class pleasanter_items_attachments_downloader
         var itemPhysicName = site.SiteSettings.Columns.Where(column => column.ColumnName == itemLogicName).FirstOrDefault()?.LabelText;
         var path = Path.Combine(arg.Path, $"[{arg.SiteId}]{site.TitleFormated}", $"[{record.ReferenceId}]{record.ItemTitleFormated}", $"[{itemLogicName}]{itemPhysicName}");
 
-        WriteLine(nest, $"Get Binary&Save...");
+        AnsiConsole.WriteLine($"Get Binary&Save...");
 
         var respose = await _httpClient.PostAsJsonAsync($"{arg.Url}/api/binaries/{guid}/get", new
         {
@@ -331,7 +342,7 @@ internal class pleasanter_items_attachments_downloader
                     }
                 case HttpStatusCode.NotFound:
                     {
-                        WriteLine(nest, $"Get Binary&Save...{respose.StatusCode}");
+                        AnsiConsole.WriteLine($"Get Binary&Save...{respose.StatusCode}");
                         return;
                     }
             }
@@ -352,7 +363,7 @@ internal class pleasanter_items_attachments_downloader
 
         File.WriteAllBytes(Path.Combine(path, fileName), binaryResponse.Response.Binaries);
 
-        WriteLine(nest, $"Get Binary&Save...Complete[{binaryResponse.Id}]");
+        AnsiConsole.WriteLine($"Get Binary&Save...Complete[{binaryResponse.Id}]");
     }
 
     private static string Omission(string str)
@@ -367,6 +378,4 @@ internal class pleasanter_items_attachments_downloader
         }
         return $"{str.Substring(0, 12)}...";
     }
-
-    private static void WriteLine(int nest, string message) => Console.WriteLine($"{string.Join("", Enumerable.Range(0, nest).Select(n => "  "/*半角SPx2*/))}{message}");
 }
