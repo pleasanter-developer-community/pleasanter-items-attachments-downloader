@@ -18,9 +18,26 @@ internal class MyArgs
     [ArgRequired, ArgRange(1, long.MaxValue)]
     public long SiteId { get; set; }
 
-    //出力対象となる添付ファイル項目
-    [ArgRegex("^([A-Z]|00[1-9]|0[1-9][0-9]|100)+?(,([A-Z]|00[1-9]|0[1-9][0-9]|100))*$")]
+    //出力から除外する
+    [ArgRegex("^((Attachments|Description)([A-Z]|00[1-9]|0[1-9][0-9]|100)|Body|Comments)+?(,((Attachments|Description)([A-Z]|00[1-9]|0[1-9][0-9]|100)|Body|Comments))*$")]
+    public string Skip { get; set; } = string.Empty;
+
+    //出力の対象とする
+    [ArgRegex("^((Attachments|Description)([A-Z]|00[1-9]|0[1-9][0-9]|100)|Body|Comments)+?(,((Attachments|Description)([A-Z]|00[1-9]|0[1-9][0-9]|100)|Body|Comments))*$")]
     public string Target { get; set; } = string.Empty;
 
-    public string[] TargetAttachment => Target.Split(',');
+    public List<string> SkipAttachments => Skip.Split(',').Where(x => x.StartsWith("Attachments")).ToList();
+
+    public List<string> SkipDescription => Skip.Split(',').Where(x => x.StartsWith("Description")).ToList();
+
+    public bool SkipBody => Skip.Contains("Body");
+    public bool SkipComments => Skip.Contains("Comments");
+
+    public List<string> TargetAttachments => Target.Split(',').Where(x => x.StartsWith("Attachments")).ToList();
+
+    public List<string> TargetDescription => Target.Split(',').Where(x => x.StartsWith("Description")).ToList();
+
+    public bool TargetBody => Target.Contains("Body");
+    public bool TargetComments => Target.Contains("Comments");
+
 }
