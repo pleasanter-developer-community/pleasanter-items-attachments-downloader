@@ -363,3 +363,4 @@ MigrationBackup/
 # サムネイル
 .DS_Store
 [Tt]humbs.db
+*/Properties/launchSettings.json
