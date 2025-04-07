@@ -194,7 +194,7 @@ internal class pleasanter_items_attachments_downloader
             WriteLine(nest + 1, $"Get Attachments Binaries...[{attachments.Key}]");
 
             //取込対象でない場合はスキップする
-            if (arg.TargetAttachment.Any(target => $"Attachments{target}" == attachments.Key))
+            if (arg.SkipAttachments.Any(target => $"Attachments{target}" == attachments.Key))
             {
                 WriteLine(nest + 1, $"Get Attachments Binaries...Skip[{attachments.Key}]");
                 continue;
