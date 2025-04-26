@@ -2,12 +2,14 @@
 using System.Net.Mail;
 using System.Text.RegularExpressions;
 using System.Xml.Schema;
+using NLog;
 using PowerArgs;
 using PowerArgs.Samples;
 using Spectre.Console;
 
 internal class pleasanter_items_attachments_downloader
 {
+    private static Logger _logger = LogManager.GetCurrentClassLogger();
     private static readonly HttpClient _httpClient;
 
     static pleasanter_items_attachments_downloader()
