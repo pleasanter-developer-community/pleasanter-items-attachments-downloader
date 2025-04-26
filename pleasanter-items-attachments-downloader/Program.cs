@@ -241,7 +241,7 @@ internal class pleasanter_items_attachments_downloader
 
     private static async Task GetBinaries(int nest, MyArgs arg, SiteData site, RecordData record, BinaryType type, string itemLogicName, string body, string specialName = null)
     {
-        var matches = Regex.Matches(body ?? "", @"\!\[image\]\((/\S+)*/binaries/[a-f0-9]{32}/show\)");
+        var matches = Regex.Matches(body ?? "", @"\!\[image\]\((/\S*?)*?/binaries/[a-f0-9]{32}/show\)");
 
         if (!matches.Any())
         {
